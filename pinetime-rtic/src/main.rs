@@ -19,18 +19,22 @@ mod app {
     use super::battery::BatteryStatus;
     use crate::hal::{
         gpio::{p0, Floating, Input, Level, Output, Pin, PushPull},
+        pac::SPIM1,
         prelude::*,
+        spim, Spim,
     };
     use debouncr::{debounce_6, Debouncer, Edge, Repeat6};
+    use display_interface_spi::SPIInterface;
     use embedded_graphics::{
-        fonts::{Font12x16, Text},
         image::{Image, ImageRawLE},
+        mono_font::{ascii::FONT_10X20, MonoTextStyle},
         pixelcolor::Rgb565,
         prelude::*,
-        primitives::rectangle::Rectangle,
-        style::{PrimitiveStyleBuilder, TextStyleBuilder},
+        primitives::{rectangle::Rectangle, PrimitiveStyleBuilder},
+        text::Text,
     };
     use fugit::ExtU32;
+    use mipidsi::{models::ST7789, Builder};
     use numtoa::NumToA;
     use rtt_target::{rprintln, rtt_init_print};
     use rubble::{
@@ -46,7 +50,6 @@ mod app {
     use rubble_nrf5x::radio::{BleRadio, PacketBuffer};
     use rubble_nrf5x::timer::BleTimer;
     use rubble_nrf5x::utils::get_device_address;
-    use st7789::{self, Orientation};
 
     #[monotonic(binds = TIMER1, default = true)]
     type MyMono = crate::mono::MonoTimer<crate::hal::pac::TIMER1>;
@@ -68,22 +71,18 @@ mod app {
         ble_ll: LinkLayer<AppConfig>,
     }
 
-    // container for Screen components
-    pub struct Screen {
-        // Styles
-        text_style: TextStyleBuilder<Rgb565, Font12x16>,
-        // LCD
-        lcd: st7789::ST7789<
-            crate::hal::spim::Spim<crate::hal::pac::SPIM1>,
-            p0::P0_18<Output<PushPull>>,
-            p0::P0_26<Output<PushPull>>,
-            crate::delay::TimerDelay,
-        >,
-    }
-
     #[shared]
     struct Shared {
-        screen: Screen,
+        // LCD
+        lcd: mipidsi::Display<
+            display_interface_spi::SPIInterface<
+                Spim<SPIM1>,
+                p0::P0_18<Output<PushPull>>,
+                p0::P0_25<Output<PushPull>>,
+            >,
+            ST7789,
+            p0::P0_26<Output<PushPull>>,
+        >,
 
         backlight: Backlight,
 
@@ -122,6 +121,7 @@ mod app {
         type PacketQueue = &'static mut SimpleQueue;
     }
 
+    /// initialization task
     #[init(local = [ble_tx_buf: PacketBuffer = [0; MIN_PDU_BUF],
                     ble_rx_buf: PacketBuffer = [0; MIN_PDU_BUF],
                     tx_queue: SimpleQueue = SimpleQueue::new(),
@@ -136,7 +136,7 @@ mod app {
             SAADC,
             SPIM1,
             TIMER0,
-            //TIMER1,
+            TIMER1,
             TIMER2,
             ..
         } = cx.device;
@@ -151,16 +151,16 @@ mod app {
         let _clocks = crate::hal::clocks::Clocks::new(CLOCK).enable_ext_hfosc();
 
         // Set up delay provider on TIMER0
-        let delay = crate::delay::TimerDelay::new(TIMER0);
+        let mut delay = crate::delay::TimerDelay::new(TIMER0);
 
         // Initialize monotonic timer on TIMER1 (for RTIC)
-        let mono = crate::mono::MonoTimer::new(cx.device.TIMER1);
+        let mono = crate::mono::MonoTimer::new(TIMER1);
 
         // Initialize BLE timer on TIMER2
         let ble_timer = BleTimer::init(TIMER2);
 
         // Set up GPIO peripheral
-        let gpio = crate::hal::gpio::p0::Parts::new(P0);
+        let gpio = p0::Parts::new(P0);
 
         // Enable backlight
         let backlight = Backlight::init(
@@ -184,9 +184,6 @@ mod app {
         // Get bluetooth device address
         let device_address = get_device_address();
         rprintln!("Bluetooth device address: {:?}", device_address);
-
-        //cx.local.ble_tx_buf = [0; MIN_PDU_BUF];
-        //cx.local.ble_rx_buf = [0; MIN_PDU_BUF];
 
         // Initialize radio
         let mut radio = BleRadio::new(RADIO, &FICR, cx.local.ble_tx_buf, cx.local.ble_rx_buf);
@@ -219,7 +216,7 @@ mod app {
         let spi_clk = gpio.p0_02.into_push_pull_output(Level::Low).degrade();
         let spi_mosi = gpio.p0_03.into_push_pull_output(Level::Low).degrade();
         let spi_miso = gpio.p0_04.into_floating_input().degrade();
-        let spi_pins = crate::hal::spim::Pins {
+        let spi_pins = spim::Pins {
             sck: spi_clk,
             miso: Some(spi_miso),
             mosi: Some(spi_mosi),
@@ -234,14 +231,14 @@ mod app {
         let lcd_rst = gpio.p0_26.into_push_pull_output(Level::Low);
 
         // Initialize SPI
-        let spi = crate::hal::Spim::new(
+        let spi = Spim::new(
             SPIM1,
             spi_pins,
             // Use SPI at 8MHz (the fastest clock available on the nRF52832)
             // because otherwise refreshing will be super slow.
-            crate::hal::spim::Frequency::M8,
+            spim::Frequency::M8,
             // SPI must be used in mode 3. Mode 0 (the default) won't work.
-            crate::hal::spim::MODE_3,
+            spim::MODE_3,
             0,
         );
 
@@ -251,36 +248,35 @@ mod app {
         // commands.
         lcd_cs.set_low().unwrap();
 
+        // display interface
+        let di = SPIInterface::new(spi, lcd_dc, lcd_cs);
         // Initialize LCD
-        let mut lcd = st7789::ST7789::new(spi, lcd_dc, lcd_rst, LCD_W, LCD_H, delay);
-        lcd.init().unwrap();
-        lcd.set_orientation(&Orientation::Portrait).unwrap();
+        let mut lcd = Builder::st7789(di)
+            .with_display_size(LCD_W, LCD_H)
+            .init(&mut delay, Some(lcd_rst))
+            .unwrap();
 
         // Draw something onto the LCD
         let backdrop_style = PrimitiveStyleBuilder::new()
             .fill_color(BACKGROUND_COLOR)
             .build();
-        Rectangle::new(Point::new(0, 0), Point::new(LCD_W as i32, LCD_H as i32))
+        Rectangle::new(Point::new(0, 0), Size::new(LCD_W as u32, LCD_H as u32))
             .into_styled(backdrop_style)
             .draw(&mut lcd)
             .unwrap();
 
         // Choose text style
-        let text_style = TextStyleBuilder::new(Font12x16)
-            .text_color(Rgb565::WHITE)
-            .background_color(BACKGROUND_COLOR);
+        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
 
         // Draw text
-        Text::new("PineTime", Point::new(10, 10))
-            .into_styled(text_style.build())
+        Text::new("PineTime", Point::new(10, 10), text_style)
             .draw(&mut lcd)
             .unwrap();
 
         // Load ferris image data
-        let ferris = ImageRawLE::new(
+        let ferris = ImageRawLE::<Rgb565>::new(
             include_bytes!("../ferris.raw"),
-            FERRIS_W as u32,
-            FERRIS_H as u32,
+            (FERRIS_W * FERRIS_H * 4).into(),
         );
 
         // Schedule tasks immediately
@@ -292,7 +288,7 @@ mod app {
 
         (
             Shared {
-                screen: Screen { text_style, lcd },
+                lcd,
                 backlight,
                 battery,
                 blstack: BLStack { radio, ble_ll },
@@ -352,7 +348,7 @@ mod app {
         });
     }
 
-    // Background task, runs whenever no other tasks are running
+    /// Background task, runs whenever no other tasks are running
     #[idle]
     fn idle(_: idle::Context) -> ! {
         loop {
@@ -369,11 +365,12 @@ mod app {
         }
     }
 
-    #[task(shared = [screen], local = [ferris, ferris_x_offset, ferris_y_offset, ferris_step_size])]
+    /// task to display ferris on the lcd
+    #[task(shared = [lcd], local = [ferris, ferris_x_offset, ferris_y_offset, ferris_step_size])]
     fn write_ferris(mut cx: write_ferris::Context) {
         // Draw ferris
         let img = Image::new(
-            &cx.local.ferris,
+            cx.local.ferris,
             Point::new(*cx.local.ferris_x_offset, *cx.local.ferris_y_offset),
         );
         // Clean up behind ferris
@@ -387,10 +384,7 @@ mod app {
                     *cx.local.ferris_x_offset - *cx.local.ferris_step_size,
                     *cx.local.ferris_y_offset,
                 ),
-                Point::new(
-                    *cx.local.ferris_x_offset,
-                    *cx.local.ferris_y_offset + (FERRIS_H as i32),
-                ),
+                Size::new(*cx.local.ferris_step_size as u32, FERRIS_H as u32),
             )
         } else {
             // Clean up to the right
@@ -399,10 +393,7 @@ mod app {
                     *cx.local.ferris_x_offset + FERRIS_W as i32,
                     *cx.local.ferris_y_offset,
                 ),
-                Point::new(
-                    *cx.local.ferris_x_offset + FERRIS_W as i32 - *cx.local.ferris_step_size,
-                    *cx.local.ferris_y_offset + (FERRIS_H as i32),
-                ),
+                Size::new(*cx.local.ferris_step_size as u32, FERRIS_H as u32),
             )
         };
         // Reset step size
@@ -413,11 +404,11 @@ mod app {
         }
         *cx.local.ferris_x_offset += *cx.local.ferris_step_size;
 
-        cx.shared.screen.lock(|screen| {
-            img.draw(&mut screen.lcd).unwrap();
+        cx.shared.lcd.lock(|lcd| {
+            img.draw(lcd).unwrap();
             Rectangle::new(p1, p2)
                 .into_styled(backdrop_style)
-                .draw(&mut screen.lcd)
+                .draw(lcd)
                 .unwrap();
         });
 
@@ -425,17 +416,20 @@ mod app {
         write_ferris::spawn_after(40.millis()).unwrap();
     }
 
-    #[task(shared = [screen], local = [counter])]
+    /// task to increment and display counter
+    #[task(shared = [lcd], local = [counter])]
     fn write_counter(mut cx: write_counter::Context) {
         rprintln!("Counter is {}", cx.local.counter);
 
         // Write counter to the display
         let mut buf = [0u8; 20];
         let text = cx.local.counter.numtoa_str(10, &mut buf);
-        cx.shared.screen.lock(|screen| {
-            Text::new(text, Point::new(10, LCD_H as i32 - 10 - 16))
-                .into_styled(screen.text_style.build())
-                .draw(&mut screen.lcd)
+        // Choose text style
+        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+
+        cx.shared.lcd.lock(|lcd| {
+            Text::new(text, Point::new(10, LCD_H as i32 - 10 - 16), text_style)
+                .draw(lcd)
                 .unwrap();
         });
         // Increment counter
@@ -444,6 +438,7 @@ mod app {
         write_counter::spawn_after(1.secs()).unwrap();
     }
 
+    /// task to poll the button, and dispatch button_pressed events
     #[task(local = [button, button_debouncer])]
     fn poll_button(cx: poll_button::Context) {
         // Poll button
@@ -489,7 +484,7 @@ mod app {
     }
 
     /// Show the battery status on the LCD.
-    #[task(shared = [battery, screen])]
+    #[task(shared = [battery, lcd])]
     fn show_battery_status(mut cx: show_battery_status::Context) {
         let (voltage, charging) = cx
             .shared
@@ -511,13 +506,15 @@ mod app {
         buf[4] = b'/';
         buf[5] = if charging { b'C' } else { b'D' };
         let status = core::str::from_utf8(&buf).unwrap();
-        cx.shared.screen.lock(|screen| {
-            let text = Text::new(status, Point::zero()).into_styled(screen.text_style.build());
+        // Choose text style
+        let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
+        cx.shared.lcd.lock(|lcd| {
+            let text = Text::new(status, Point::zero(), text_style);
             let translation = Point::new(
-                LCD_W as i32 - text.size().width as i32 - MARGIN as i32,
+                LCD_W as i32 - text.character_style.font.image.size().width as i32 - MARGIN as i32,
                 MARGIN as i32,
             );
-            text.translate(translation).draw(&mut screen.lcd).unwrap();
+            text.translate(translation).draw(lcd).unwrap();
         });
     }
 }
