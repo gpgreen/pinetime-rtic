@@ -2,26 +2,29 @@
 name = "pinetime-rtic"
 version = "0.1.0"
 authors = ["Danilo Bargen <mail@dbrgn.ch>"]
-edition = "2018"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/dbrgn/pinetime-rtic/"
 
 [dependencies]
-#cortex-m = "0.7"
+cortex-m = "0.6"
+cortex-m-rt = "0.6"
 cortex-m-rtic = { version = "1.0.0", default-features = false }
-panic-semihosting = "0.5.3"
-cortex-m-semihosting = "0.3.5"
+nrf52832-hal = { version = "0.12", features = ["rt","xxAA-package"], default-features = false }
+rtic-monotonic = "1.0.0"
+embedded-hal = "0.2"
+fugit = "0.3.0"
 debouncr = "0.1.2"
-embedded-graphics = "0.6"
-embedded-hal = { version = "0.2", features = ["unproven"] }
-nrf52832-hal = { version = "0.12", features = ["rt"] }
 numtoa = "0.2"
-#panic-rtt-target = { version = "0.1", features = ["cortex-m"] }
-#rtt-target = { version = "0.1", features = ["cortex-m"] }
+panic-rtt-target = { version = "0.1", features = ["cortex-m"] }
+rtt-target = { version = "0.1", features = ["cortex-m"] }
 rubble = "0.0.4"
 rubble-nrf5x = { version = "0.0.4", features = ["52832"], default-features = false }
-st7789 = "0.7.0"
+# we need to bump this to 0.7
+st7789 = { version = "0.2", features = ["graphics","batch","buffer"], default-features = false }
+# embedded graphics upgrade needed
+embedded-graphics = "0.6"
 
 [profile.dev]
 codegen-units = 1

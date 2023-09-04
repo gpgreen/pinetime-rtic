@@ -182,15 +182,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cortex-m-semihosting"
-version = "0.3.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bffa6c1454368a6aa4811ae60964c38e6996d397ff8095a8b9211b1c1f749bc"
-dependencies = [
- "cortex-m 0.7.7",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,12 +233,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "display-interface"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7517c040926d7b02b111884aa089177db80878533127f7c1b480d852c5fb4112"
-
-[[package]]
 name = "doc-comment"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -287,16 +272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "embedded-graphics-core"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b1239db5f3eeb7e33e35bd10bd014e7b2537b17e071f726a09351431337cfa"
-dependencies = [
- "az",
- "byteorder",
-]
-
-[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -327,6 +302,21 @@ dependencies = [
  "half",
  "typenum",
 ]
+
+[[package]]
+name = "fugit"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17186ad64927d5ac8f02c1e77ccefa08ccd9eaa314d5a4772278aa204a22f7e7"
+dependencies = [
+ "gcd",
+]
+
+[[package]]
+name = "gcd"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d758ba1b47b00caf47f24925c0074ecb20d6dfcffe7f6d53395c0465674841a"
 
 [[package]]
 name = "generic-array"
@@ -509,6 +499,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-derive"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "876a53fff98e03a936a674b29568b0e605f06b29372c2489ff4de23f1949743d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "num-traits"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f30b0abd723be7e2ffca1272140fac1a2f084c77ec3e123c192b66af1ee9e6c2"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "numtoa"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -530,27 +540,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "panic-semihosting"
-version = "0.5.6"
+name = "panic-rtt-target"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d55dedd501dfd02514646e0af4d7016ce36bc12ae177ef52056989966a1eec"
+checksum = "0d6ab67bc881453e4c90f958c657c1303670ea87bc1a16e87fd71a40f656dce9"
 dependencies = [
  "cortex-m 0.7.7",
- "cortex-m-semihosting",
+ "rtt-target 0.3.1",
 ]
 
 [[package]]
 name = "pinetime-rtic"
 version = "0.1.0"
 dependencies = [
+ "cortex-m 0.6.7",
+ "cortex-m-rt",
  "cortex-m-rtic",
- "cortex-m-semihosting",
  "debouncr",
  "embedded-graphics",
  "embedded-hal",
+ "fugit",
  "nrf52832-hal",
  "numtoa",
- "panic-semihosting",
+ "panic-rtt-target",
+ "rtic-monotonic",
+ "rtt-target 0.1.1",
  "rubble",
  "rubble-nrf5x",
  "st7789",
@@ -638,6 +652,26 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "rtt-target"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26ebda2070a2dd2f5d1bba0c427055f475bb011ca8215add472b6e6ba6b7265c"
+dependencies = [
+ "cortex-m 0.6.7",
+ "ufmt-write",
+ "vcell",
+]
+
+[[package]]
+name = "rtt-target"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "065d6058bb1204f51a562a67209e1817cf714759d5cf845aa45c75fa7b0b9d9b"
+dependencies = [
+ "ufmt-write",
 ]
 
 [[package]]
@@ -732,15 +766,16 @@ dependencies = [
 
 [[package]]
 name = "st7789"
-version = "0.7.0"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e89eaa897f8688aa897a7a8a62847e00e3f49f804d918bdebd14d4a1beb5ab"
+checksum = "5ccc7b7e79f9e578e981bfab45b502b72ca02717a4356df0478228a6ff7c47c4"
 dependencies = [
- "display-interface",
- "embedded-graphics-core",
+ "embedded-graphics",
  "embedded-hal",
- "heapless 0.7.16",
- "nb 1.1.0",
+ "heapless 0.5.6",
+ "nb 0.1.3",
+ "num-derive",
+ "num-traits",
 ]
 
 [[package]]
@@ -771,6 +806,12 @@ name = "typenum"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "497961ef93d974e23eb6f433eb5fe1b7930b659f06d12dec6fc44a8f554c0bba"
+
+[[package]]
+name = "ufmt-write"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e87a2ed6b42ec5e28cc3b94c09982969e9227600b2e3dcbc1db927a84c06bd69"
 
 [[package]]
 name = "unicode-ident"
