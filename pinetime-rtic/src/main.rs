@@ -180,6 +180,7 @@ mod app {
         // Enable button
         gpio.p0_15.into_push_pull_output(Level::High);
         let button = gpio.p0_13.into_floating_input().degrade();
+        let button_debouncer = debounce_6();
 
         // Get bluetooth device address
         let device_address = get_device_address();
@@ -211,6 +212,7 @@ mod app {
             )
             .unwrap();
         ble_ll.timer().configure_interrupt(next_update);
+        let blstack = BLStack { radio, ble_ll };
 
         // Set up SPI pins
         let spi_clk = gpio.p0_02.into_push_pull_output(Level::Low).degrade();
@@ -256,14 +258,8 @@ mod app {
             .init(&mut delay, Some(lcd_rst))
             .unwrap();
 
-        // Draw something onto the LCD
-        let backdrop_style = PrimitiveStyleBuilder::new()
-            .fill_color(BACKGROUND_COLOR)
-            .build();
-        Rectangle::new(Point::new(0, 0), Size::new(LCD_W as u32, LCD_H as u32))
-            .into_styled(backdrop_style)
-            .draw(&mut lcd)
-            .unwrap();
+        // clear the display
+        lcd.clear(BACKGROUND_COLOR).ok();
 
         // Choose text style
         let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
@@ -278,6 +274,10 @@ mod app {
             include_bytes!("../ferris.raw"),
             (FERRIS_W * FERRIS_H * 4).into(),
         );
+        let counter = 0;
+        let ferris_x_offset = 10;
+        let ferris_y_offset = 80;
+        let ferris_step_size = 2;
 
         // Schedule tasks immediately
         write_counter::spawn().unwrap();
@@ -291,17 +291,17 @@ mod app {
                 lcd,
                 backlight,
                 battery,
-                blstack: BLStack { radio, ble_ll },
+                blstack,
             },
             Local {
                 ble_r,
                 button,
-                button_debouncer: debounce_6(),
-                counter: 0,
+                button_debouncer,
+                counter,
                 ferris,
-                ferris_x_offset: 10,
-                ferris_y_offset: 80,
-                ferris_step_size: 2,
+                ferris_x_offset,
+                ferris_y_offset,
+                ferris_step_size,
             },
             init::Monotonics(mono), // give the monotonic to RTIC
         )
@@ -330,20 +330,19 @@ mod app {
     fn timer2(mut cx: timer2::Context) {
         cx.shared.blstack.lock(|blstack| {
             let timer = blstack.ble_ll.timer();
-            if !timer.is_interrupt_pending() {
-                return;
-            }
-            timer.clear_interrupt();
+            if timer.is_interrupt_pending() {
+                timer.clear_interrupt();
 
-            let cmd = blstack.ble_ll.update_timer(&mut blstack.radio);
-            blstack.radio.configure_receiver(cmd.radio);
+                let cmd = blstack.ble_ll.update_timer(&mut blstack.radio);
+                blstack.radio.configure_receiver(cmd.radio);
 
-            blstack.ble_ll.timer().configure_interrupt(cmd.next_update);
+                blstack.ble_ll.timer().configure_interrupt(cmd.next_update);
 
-            if cmd.queued_work {
-                // If there's any lower-priority work to be done, ensure that happens.
-                // If we fail to spawn the task, it's already scheduled.
-                ble_worker::spawn().ok();
+                if cmd.queued_work {
+                    // If there's any lower-priority work to be done, ensure that happens.
+                    // If we fail to spawn the task, it's already scheduled.
+                    ble_worker::spawn().ok();
+                }
             }
         });
     }
