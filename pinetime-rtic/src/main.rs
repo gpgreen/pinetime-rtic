@@ -50,18 +50,47 @@ const MARGIN: u16 = 10;
 
 const BACKGROUND_COLOR: Rgb565 = Rgb565::new(0, 0b000111, 0);
 
-pub struct AppConfig {}
+//#[app(device = nrf52832_hal::pac, peripherals = true, monotonic = crate::monotonic_nrf52::Tim1)]
+#[rtic::app(device = crate::hal::pack, peripherals = true, dispatchers = [SWI0_EGU0])]
+mod app {
+
+    use embedded_hal::digital::v2::InputPin;
+    use systick_monotonic::*;
+    use {
+        hal::{
+            gpio::{Input, Level, Pin, PullUp},
+            gpiote::*,
+            ppi::{self, ConfigurablePpi, Ppi},
+        },
+        nrf52832_hal as hal,
+        rtt_target::{rprintln, rtt_init_print},
+    };
+
+    #[monotonic(binds = SysTick, default = true)]
+    type Timer = Systick<1_000_000>;
+
+    #[shared]
+    struct Shared {
+        gpiote: Gpiote,
+    }
+
+    #[local]
+    struct Local {
+        btn1: Pin<Input<PullUp>>,
+        btn3: Pin<Input<PullUp>>,
+        btn4: Pin<Input<PullUp>>,
+    }
+
+    pub struct AppConfig {}
 
 impl Config for AppConfig {
     type Timer = BleTimer<hal::target::TIMER2>;
     type Transmitter = BleRadio;
     type ChannelMapper = BleChannelMap<BatteryServiceAttrs, NoSecurity>;
     type PacketQueue = &'static mut SimpleQueue;
-}
+    }
 
-#[app(device = nrf52832_hal::pac, peripherals = true, monotonic = crate::monotonic_nrf52::Tim1)]
-const APP: () = {
-    struct Resources {
+    Resources {
         // LCD
         lcd: st7789::ST7789<
             hal::spim::Spim<pac::SPIM1>,
