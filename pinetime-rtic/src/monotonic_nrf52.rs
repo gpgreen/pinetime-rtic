@@ -7,6 +7,7 @@ pub struct MonoTimer<T: Instance32>(T);
 
 impl<T: Instance32> MonoTimer<T> {
     pub fn new(timer: T) -> Self {
+        #![allow(unsafe_code)]
         timer.prescaler.write(
             |w| unsafe { w.prescaler().bits(4) }, // 1 MHz
         );
@@ -19,6 +20,7 @@ impl<T: Instance32> Monotonic for MonoTimer<T> {
     type Instant = fugit::TimerInstantU32<1_000_000>;
     type Duration = fugit::TimerDurationU32<1_000_000>;
 
+    #[allow(unsafe_code)]
     unsafe fn reset(&mut self) {
         self.0.intenset.modify(|_, w| w.compare0().set());
         self.0.tasks_clear.write(|w| w.bits(1));
@@ -27,11 +29,13 @@ impl<T: Instance32> Monotonic for MonoTimer<T> {
 
     #[inline(always)]
     fn now(&mut self) -> Self::Instant {
+        #![allow(unsafe_code)]
         self.0.tasks_capture[1].write(|w| unsafe { w.bits(1) });
         Self::Instant::from_ticks(self.0.cc[1].read().bits())
     }
 
     fn set_compare(&mut self, instant: Self::Instant) {
+        #![allow(unsafe_code)]
         self.0.cc[0].write(|w| unsafe { w.cc().bits(instant.duration_since_epoch().ticks()) });
     }
 

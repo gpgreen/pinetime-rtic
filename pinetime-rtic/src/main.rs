@@ -1,3 +1,8 @@
+//! pinetime-rtic main.rs
+
+#![deny(unsafe_code)]
+#![deny(warnings)]
+#![deny(missing_docs)]
 #![no_main]
 #![cfg_attr(not(test), no_std)]
 
@@ -5,25 +10,31 @@
 #[cfg(not(test))]
 use panic_rtt_target as _;
 
+// device hal
 use nrf52832_hal as hal;
 
 mod backlight;
 mod battery;
+mod ble;
+mod button;
 mod delay;
-mod mono;
+mod monotonic_nrf52;
 
 #[rtic::app(device = crate::hal::pac, peripherals = true, dispatchers = [SWI0_EGU0, SWI1_EGU1, SWI2_EGU2, SWI3_EGU3, SWI4_EGU4, SWI5_EGU5])]
 mod app {
 
     use super::backlight::Backlight;
     use super::battery::BatteryStatus;
+    use super::button::Button;
+    use crate::ble::{
+        ble_initialize, ble_worker, radio_interrupt, timer2_interrupt, AppConfig, BleStack,
+    };
     use crate::hal::{
-        gpio::{p0, Floating, Input, Level, Output, Pin, PushPull},
+        gpio::{p0, Level, Output, PushPull},
         pac::SPIM1,
         prelude::*,
         spim, Spim,
     };
-    use debouncr::{debounce_6, Debouncer, Edge, Repeat6};
     use display_interface_spi::SPIInterface;
     use embedded_graphics::{
         image::{Image, ImageRawLE},
@@ -37,22 +48,11 @@ mod app {
     use mipidsi::{models::ST7789, Builder};
     use numtoa::NumToA;
     use rtt_target::{rprintln, rtt_init_print};
-    use rubble::{
-        config::Config,
-        gatt::BatteryServiceAttrs,
-        l2cap::{BleChannelMap, L2CAPState},
-        link::ad_structure::AdStructure,
-        link::queue::{PacketQueue, SimpleQueue},
-        link::{LinkLayer, Responder, MIN_PDU_BUF},
-        security::NoSecurity,
-        time::{Duration as RubbleDuration, Timer},
-    };
-    use rubble_nrf5x::radio::{BleRadio, PacketBuffer};
-    use rubble_nrf5x::timer::BleTimer;
-    use rubble_nrf5x::utils::get_device_address;
+    use rubble::link::{queue::SimpleQueue, Responder, MIN_PDU_BUF};
+    use rubble_nrf5x::{radio::PacketBuffer, timer::BleTimer};
 
     #[monotonic(binds = TIMER1, default = true)]
-    type MyMono = crate::mono::MonoTimer<crate::hal::pac::TIMER1>;
+    type MyMono = crate::monotonic_nrf52::MonoTimer<crate::hal::pac::TIMER1>;
 
     const LCD_W: u16 = 240;
     const LCD_H: u16 = 240;
@@ -61,15 +61,6 @@ mod app {
     const FERRIS_H: u16 = 64;
 
     const MARGIN: u16 = 10;
-
-    const BACKGROUND_COLOR: Rgb565 = Rgb565::new(0, 0b000111, 0);
-
-    // container for BLE stack components
-    pub struct BLStack {
-        // BLE
-        radio: BleRadio,
-        ble_ll: LinkLayer<AppConfig>,
-    }
 
     #[shared]
     struct Shared {
@@ -90,7 +81,7 @@ mod app {
         battery: BatteryStatus,
 
         // BLE
-        blstack: BLStack,
+        blestack: BleStack,
     }
 
     #[local]
@@ -99,8 +90,7 @@ mod app {
         ble_r: Responder<AppConfig>,
 
         // Button
-        button: Pin<Input<Floating>>,
-        button_debouncer: Debouncer<u8, Repeat6>,
+        button: Button,
 
         // Counter resources
         counter: usize,
@@ -112,21 +102,12 @@ mod app {
         ferris_step_size: i32,
     }
 
-    pub struct AppConfig {}
-
-    impl Config for AppConfig {
-        type Timer = BleTimer<crate::hal::pac::TIMER2>;
-        type Transmitter = BleRadio;
-        type ChannelMapper = BleChannelMap<BatteryServiceAttrs, NoSecurity>;
-        type PacketQueue = &'static mut SimpleQueue;
-    }
-
     /// initialization task
     #[init(local = [ble_tx_buf: PacketBuffer = [0; MIN_PDU_BUF],
                     ble_rx_buf: PacketBuffer = [0; MIN_PDU_BUF],
                     tx_queue: SimpleQueue = SimpleQueue::new(),
     rx_queue: SimpleQueue = SimpleQueue::new()])]
-    fn init(cx: init::Context) -> (Shared, Local, init::Monotonics) {
+    fn init(mut cx: init::Context) -> (Shared, Local, init::Monotonics) {
         // Destructure device peripherals
         let crate::hal::pac::Peripherals {
             CLOCK,
@@ -154,10 +135,7 @@ mod app {
         let mut delay = crate::delay::TimerDelay::new(TIMER0);
 
         // Initialize monotonic timer on TIMER1 (for RTIC)
-        let mono = crate::mono::MonoTimer::new(TIMER1);
-
-        // Initialize BLE timer on TIMER2
-        let ble_timer = BleTimer::init(TIMER2);
+        let mono = crate::monotonic_nrf52::MonoTimer::new(TIMER1);
 
         // Set up GPIO peripheral
         let gpio = p0::Parts::new(P0);
@@ -178,41 +156,21 @@ mod app {
         );
 
         // Enable button
-        gpio.p0_15.into_push_pull_output(Level::High);
-        let button = gpio.p0_13.into_floating_input().degrade();
-        let button_debouncer = debounce_6();
-
-        // Get bluetooth device address
-        let device_address = get_device_address();
-        rprintln!("Bluetooth device address: {:?}", device_address);
-
-        // Initialize radio
-        let mut radio = BleRadio::new(RADIO, &FICR, cx.local.ble_tx_buf, cx.local.ble_rx_buf);
-
-        // Create bluetooth TX/RX queues
-        let (tx, tx_cons) = cx.local.tx_queue.split();
-        let (rx_prod, rx) = cx.local.rx_queue.split();
-
-        // Create the actual BLE stack objects
-        let mut ble_ll = LinkLayer::<AppConfig>::new(device_address, ble_timer);
-        let ble_r = Responder::<AppConfig>::new(
-            tx,
-            rx,
-            L2CAPState::new(BleChannelMap::with_attributes(BatteryServiceAttrs::new())),
+        let button = Button::init(
+            gpio.p0_15.into_push_pull_output(Level::High).degrade(),
+            gpio.p0_13.into_floating_input().degrade(),
         );
 
-        // Send advertisement and set up regular interrupt
-        let next_update = ble_ll
-            .start_advertise(
-                RubbleDuration::from_millis(200),
-                &[AdStructure::CompleteLocalName("Rusty PineTime")],
-                &mut radio,
-                tx_cons,
-                rx_prod,
-            )
-            .unwrap();
-        ble_ll.timer().configure_interrupt(next_update);
-        let blstack = BLStack { radio, ble_ll };
+        // fire up the BLE Stack
+        let (blestack, ble_r) = ble_initialize(
+            RADIO,
+            FICR,
+            cx.local.ble_tx_buf,
+            cx.local.ble_rx_buf,
+            cx.local.tx_queue,
+            cx.local.rx_queue,
+            BleTimer::init(TIMER2), // Initialize BLE timer on TIMER2
+        );
 
         // Set up SPI pins
         let spi_clk = gpio.p0_02.into_push_pull_output(Level::Low).degrade();
@@ -259,7 +217,7 @@ mod app {
             .unwrap();
 
         // clear the display
-        lcd.clear(BACKGROUND_COLOR).ok();
+        lcd.clear(Rgb565::BLACK).ok();
 
         // Choose text style
         let text_style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
@@ -270,14 +228,7 @@ mod app {
             .unwrap();
 
         // Load ferris image data
-        let ferris = ImageRawLE::<Rgb565>::new(
-            include_bytes!("../ferris.raw"),
-            (FERRIS_W * FERRIS_H * 4).into(),
-        );
-        let counter = 0;
-        let ferris_x_offset = 10;
-        let ferris_y_offset = 80;
-        let ferris_step_size = 2;
+        let ferris = ImageRawLE::<Rgb565>::new(include_bytes!("../ferris.raw"), FERRIS_W.into());
 
         // Schedule tasks immediately
         write_counter::spawn().unwrap();
@@ -286,82 +237,46 @@ mod app {
         show_battery_status::spawn().unwrap();
         update_battery_status::spawn().unwrap();
 
+        // set the ARM SLEEPONEXIT bit to go to sleep after handling interrupts
+        cx.core.SCB.set_sleepdeep();
+
         (
             Shared {
                 lcd,
                 backlight,
                 battery,
-                blstack,
+                blestack,
             },
             Local {
                 ble_r,
                 button,
-                button_debouncer,
-                counter,
+                counter: 0,
                 ferris,
-                ferris_x_offset,
-                ferris_y_offset,
-                ferris_step_size,
+                ferris_x_offset: 10,
+                ferris_y_offset: 80,
+                ferris_step_size: 2,
             },
             init::Monotonics(mono), // give the monotonic to RTIC
         )
     }
 
-    /// Hook up the RADIO interrupt to the Rubble BLE stack.
-    #[task(binds = RADIO, shared = [blstack], priority = 3)]
-    fn radio(mut cx: radio::Context) {
-        cx.shared.blstack.lock(|blstack| {
-            let n = blstack.ble_ll.timer().now();
-            if let Some(cmd) = blstack.radio.recv_interrupt(n, &mut blstack.ble_ll) {
-                blstack.radio.configure_receiver(cmd.radio);
-                blstack.ble_ll.timer().configure_interrupt(cmd.next_update);
-
-                if cmd.queued_work {
-                    // If there's any lower-priority work to be done, ensure that happens.
-                    // If we fail to spawn the task, it's already scheduled.
-                    ble_worker::spawn().ok();
-                }
-            }
-        });
-    }
-
-    /// Hook up the TIMER2 interrupt to the Rubble BLE stack.
-    #[task(binds = TIMER2, shared = [blstack], priority = 3)]
-    fn timer2(mut cx: timer2::Context) {
-        cx.shared.blstack.lock(|blstack| {
-            let timer = blstack.ble_ll.timer();
-            if timer.is_interrupt_pending() {
-                timer.clear_interrupt();
-
-                let cmd = blstack.ble_ll.update_timer(&mut blstack.radio);
-                blstack.radio.configure_receiver(cmd.radio);
-
-                blstack.ble_ll.timer().configure_interrupt(cmd.next_update);
-
-                if cmd.queued_work {
-                    // If there's any lower-priority work to be done, ensure that happens.
-                    // If we fail to spawn the task, it's already scheduled.
-                    ble_worker::spawn().ok();
-                }
-            }
-        });
-    }
-
-    /// Background task, runs whenever no other tasks are running
+    /// idle task, allows cpu to sleep when this task is reached, runs at priority 0
     #[idle]
     fn idle(_: idle::Context) -> ! {
         loop {
-            continue;
+            // wait for interrupt is used instead of a busy-wait loop
+            // to allow MCU to sleep between interrupts
+            rtic::export::wfi()
         }
     }
 
-    /// Lower-priority task spawned from RADIO and TIMER2 interrupts.
-    #[task(local = [ble_r], priority = 2)]
-    fn ble_worker(cx: ble_worker::Context) {
-        // Fully drain the packet queue
-        while cx.local.ble_r.has_work() {
-            cx.local.ble_r.process_one().unwrap();
-        }
+    extern "Rust" {
+        #[task(binds = RADIO, shared = [blestack], priority = 3)]
+        fn radio_interrupt(_: radio_interrupt::Context);
+        #[task(binds = TIMER2, shared = [blestack], priority = 3)]
+        fn timer2_interrupt(_: timer2_interrupt::Context);
+        #[task(local = [ble_r], priority = 2)]
+        fn ble_worker(_: ble_worker::Context);
     }
 
     /// task to display ferris on the lcd
@@ -374,7 +289,7 @@ mod app {
         );
         // Clean up behind ferris
         let backdrop_style = PrimitiveStyleBuilder::new()
-            .fill_color(BACKGROUND_COLOR)
+            .fill_color(Rgb565::BLACK)
             .build();
         let (p1, p2) = if *cx.local.ferris_step_size > 0 {
             // Clean up to the left
@@ -438,17 +353,11 @@ mod app {
     }
 
     /// task to poll the button, and dispatch button_pressed events
-    #[task(local = [button, button_debouncer])]
+    #[task(local = [button])]
     fn poll_button(cx: poll_button::Context) {
-        // Poll button
-        let pressed = cx.local.button.is_high().unwrap();
-        let edge = cx.local.button_debouncer.update(pressed);
-
-        // Dispatch event
-        if edge == Some(Edge::Rising) {
+        if cx.local.button.poll() {
             button_pressed::spawn().unwrap();
         }
-
         // Re-schedule the timer interrupt in 2ms
         poll_button::spawn_after(2.millis()).unwrap();
     }

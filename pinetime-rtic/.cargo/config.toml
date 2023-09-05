@@ -1,5 +1,8 @@
 [target.thumbv7em-none-eabihf]
 runner = "arm-none-eabi-gdb"
+#rustflags = [
+#  "-C", "linker=flip-link",
+#]
 
 [build]
 target = "thumbv7em-none-eabihf"

@@ -1,11 +1,11 @@
 [package]
 name = "pinetime-rtic"
-version = "0.1.0"
-authors = ["Danilo Bargen <mail@dbrgn.ch>"]
+version = "0.2.0"
+authors = ["Danilo Bargen <mail@dbrgn.ch>, Greg Green <gpgreen@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/dbrgn/pinetime-rtic/"
+repository = "https://github.com/gpgreen/pinetime-rtic/"
 
 [dependencies]
 cortex-m = "0.6"
